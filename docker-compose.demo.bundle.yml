@@ -1,0 +1,40 @@
+# Standalone demo compose — registry images only (no local build).
+# Shipped inside release demo-bundle tarballs. Override images via env:
+#   TRUST_RECEIVER_IMAGE, SSF_RELAY_IMAGE
+
+services:
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  trust-receiver:
+    image: ${TRUST_RECEIVER_IMAGE:-ghcr.io/example/ssf/ssf/trust-receiver:dev}
+    volumes:
+      - ./demo/trust-receiver.yaml:/etc/trust-receiver/config.yaml:ro
+    ports:
+      - "9090:9090"
+
+  ssf-relay:
+    image: ${SSF_RELAY_IMAGE:-ghcr.io/example/ssf/ssf/relay:dev}
+    entrypoint: ["/usr/local/bin/ssf-relay", "/etc/ssf-relay/config.yaml"]
+    volumes:
+      - ./ssf-relay.demo.yaml:/etc/ssf-relay/config.yaml:ro
+    environment:
+      VAULT_TOKEN: root
+    depends_on:
+      vault:
+        condition: service_healthy
+      trust-receiver:
+        condition: service_started

@@ -1,0 +1,186 @@
+name: Security Pipeline
+
+# Security pipeline (static analysis, vuln scan, secrets, license, fuzz, container)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Sunday 2am UTC — catch new CVEs on existing code
+    - cron: '0 2 * * 0'
+
+permissions:
+  contents: read
+  security-events: write  # GitHub Security tab integration (optional)
+
+env:
+  GO_VERSION: '1.26.6'
+
+jobs:
+
+  # ── Layer 1: Static Analysis (every push + PR) ──
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+      - name: go fmt check
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::Unformatted files found:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+  # ── Layer 2: Vulnerability Scan (call-graph aware) ──
+  vulnerability-scan:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ── Layer 3: Secret Scan (code + full history) ──
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Findings still fail the job via gitleaks' own exit code and appear in
+          # the run log; skip the SARIF artifact upload (Actions storage quota).
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  # ── Layer 4: License Compliance ──
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go-licenses check
+        run: |
+          go install github.com/google/go-licenses@latest
+          go-licenses check ./... 2>&1 | tee license-report.txt
+          # Fail on restricted licenses (GPL, AGPL, SSPL)
+          if grep -iE "GPL|AGPL|SSPL" license-report.txt; then
+            echo "::error::Restricted license detected in dependencies"
+            exit 1
+          fi
+
+  # ── Layer 5: Fuzz Testing (main push only; slow) ──
+  # No fuzz targets yet — this no-ops cleanly. Add `func Fuzz*` targets for every
+  # untrusted-input parser (SET/CAEP decode, source adapters) and they run automatically.
+  fuzz:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Fuzz untrusted-input paths (5 minutes each)
+        run: |
+          FUZZ_TARGETS=$(grep -rl "func Fuzz" --include="*_test.go" . | head -20)
+          for FILE in $FUZZ_TARGETS; do
+            PKG=$(dirname "$FILE" | sed 's|^\./||')
+            FUNCS=$(grep -o "func Fuzz[A-Za-z_]*" "$FILE" | sed 's/func //')
+            for FUNC in $FUNCS; do
+              echo "::group::Fuzzing $PKG/$FUNC"
+              go test "./$PKG" -fuzz="^${FUNC}$" -fuzztime=5m -v 2>&1 || true
+              echo "::endgroup::"
+            done
+          done
+      - name: Upload fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: '**/testdata/fuzz/**'
+          retention-days: 30
+
+  # ── Layer 6: Container Scan (main push only) ──
+  # Scans the shipped image (Dockerfile, not Dockerfile.push).
+  container-scan:
+    name: Container Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f Dockerfile -t ssf-relay:scan .
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ssf-relay:scan'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+  # ── Layer 7: SBOM Generation (tagged releases only) ──
+  sbom:
+    name: SBOM Generation
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          cyclonedx-gomod mod -output sbom.json -json
+          cyclonedx-gomod mod -output sbom.xml
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom.json
+            sbom.xml
+
+  # ── Layer 8: Dependency Freshness (weekly; advisory) ──
+  dependency-freshness:
+    name: Dependency Freshness
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Check for updates
+        run: |
+          echo "## Dependency Update Report" > dep-report.md
+          echo '```' >> dep-report.md
+          go list -m -u all 2>&1 | grep '\[' >> dep-report.md || echo "All dependencies up to date" >> dep-report.md
+          echo '```' >> dep-report.md
+          cat dep-report.md

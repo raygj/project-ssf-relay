@@ -1,0 +1,13 @@
+# In-memory trust receiver for local docker-compose demo.
+# Real SSE + stream API — not the in-repo lab stub in cmd/ssf-trust-receiver.
+
+listen_addr: ":9090"
+log_level: "info"
+log_format: "text"
+receiver_url: "http://trust-receiver:9090"
+
+reactions:
+  on_process_hash_mismatch:
+    caep_signal: source-compromised
+    auto_resolve: approve
+    auto_resolve_after: 5s

@@ -1,0 +1,83 @@
+ssf:
+  receiver_url: http://localhost:9000/
+  issuer: ssf-relay
+  timeout_secs: 5
+  # Optional: sign SETs as compact JWS (RFC 7515, typ=secevent+jwt, alg=ES256).
+  # Generate a key: openssl ecparam -name prime256v1 -genkey -noout -out signing.key
+  # Omit both fields for unsigned JSON delivery (backward compatible).
+  signing_key_pem_file: /etc/ssf-relay/signing.key
+  # signing_key_pem: |   # inline alternative (takes precedence over file)
+  #   -----BEGIN EC PRIVATE KEY-----
+  #   ...
+  #   -----END EC PRIVATE KEY-----
+
+sources:
+  # File-tail transport (default — no transport field required).
+  - name: vault-prod
+    type: vault-audit
+    path: /vault/logs/audit.log
+
+  # Socket transport — eliminates log-rotation races; enables backpressure.
+  # Configure Vault: vault audit enable socket address=/tmp/vault-audit.sock socket_type=unix
+  # - name: vault-socket
+  #   type: vault-audit
+  #   transport: socket
+  #   path: /tmp/vault-audit.sock
+    config:
+      mount_rules:
+        - prefix: database/creds/
+          engine: database
+          event: https://schemas.fiam/vault/credential-issued
+        - prefix: aws/creds/
+          engine: aws
+          event: https://schemas.fiam/vault/credential-issued
+        - prefix: pki/issue/
+          engine: pki
+          event: https://schemas.fiam/vault/credential-issued
+        - prefix: kv/data/
+          engine: kv-v2
+          event: https://schemas.fiam/vault/secret-accessed
+      drop_prefixes:
+        - sys/
+        - auth/token/lookup
+        - auth/token/renew-self
+
+  - name: k8s-cluster-prod
+    type: k8s-audit
+    path: /var/log/kubernetes/audit.log
+    config:
+      stages: [ResponseComplete]
+      drop_users:
+        - system:node
+        - system:serviceaccount:kube-system:generic-garbage-collector
+      drop_verbs: [watch]
+
+  - name: opa-prod
+    type: opa-decision
+    path: /var/log/opa/decisions.log
+    config:
+      emit_allow: false
+      drop_paths:
+        - data.system.main
+
+# sinks: inbound signal handlers — the relay subscribes to the trust receiver
+# SSE stream and routes signals to local system actions.
+# One adapter instance is built per unique action name; event_type is used only
+# to document intent and feed the SSE subscription filter.
+#
+# sinks:
+#   - event_type: https://schemas.openid.net/secevent/caep/event-type/source-compromised
+#     action: vault
+#     config:
+#       vault_addr: http://vault:8200
+#       vault_token_env: VAULT_TOKEN   # default: VAULT_TOKEN
+#
+#   - event_type: https://schemas.openid.net/secevent/caep/event-type/source-degraded
+#     action: vault
+#     config:
+#       vault_addr: http://vault:8200
+#
+#   - event_type: https://schemas.openid.net/secevent/caep/event-type/source-recovered
+#     action: vault
+#     config:
+#       vault_addr: http://vault:8200

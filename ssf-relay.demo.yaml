@@ -1,0 +1,28 @@
+# Minimal inbound demo: Vault sink only, no outbound sources.
+# Used by docker-compose.demo.yml and `make demo`.
+
+ssf:
+  receiver_url: http://trust-receiver:9090/
+  issuer: ssf-relay
+  timeout_secs: 5
+
+sources: []
+
+sinks:
+  - event_type: https://schemas.openid.net/secevent/caep/event-type/source-compromised
+    action: vault
+    config:
+      vault_addr: http://vault:8200
+      vault_token_env: VAULT_TOKEN
+
+  - event_type: https://schemas.openid.net/secevent/caep/event-type/source-degraded
+    action: vault
+    config:
+      vault_addr: http://vault:8200
+      vault_token_env: VAULT_TOKEN
+
+  - event_type: https://schemas.openid.net/secevent/caep/event-type/source-recovered
+    action: vault
+    config:
+      vault_addr: http://vault:8200
+      vault_token_env: VAULT_TOKEN

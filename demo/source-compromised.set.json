@@ -1,0 +1,14 @@
+{
+  "iss": "ssf-trust-receiver",
+  "iat": 1700000000,
+  "jti": "demo-compromised-1",
+  "correlation_id": "demo-corr-1",
+  "events": {
+    "https://schemas.openid.net/secevent/caep/event-type/source-compromised": {
+      "source_id": "demo-workload",
+      "previous_score": "HEALTHY",
+      "current_score": "COMPROMISED",
+      "reason": "manual demo trigger"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Build output
+/bin/
+/dist/
+
+# macOS
+.DS_Store
+
+# Go
+*.test
+*.out
